@@ -99,7 +99,7 @@ try:
   if os.access("/dev/shm", os.W_OK):
     f_handler = logging.FileHandler(f"/dev/shm/{script}.{currentuser}.log", 'a')
   else:
-    f_handler = logging.FileHandler(f"/tmp/{script}.{currentuser}.log", 'a')
+    f_handler = logging.FileHandler(f"C:/Dev/Projects/trannergy2mqtt/{script}.{currentuser}.log", 'a')
 
   f_handler.setLevel(logging.ERROR)
   f_format = logging.Formatter('%(name)s[%(process)d] %(levelname)s: '

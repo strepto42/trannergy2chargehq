@@ -68,6 +68,7 @@ class ParseTelegrams(threading.Thread):
     topic = topic.replace('//', '/')
     message = json.dumps(json_dict, sort_keys=True, separators=(',', ':'))
     self.__mqtt.do_publish(topic, message, retain=False)
+    logger.info(message)
 
   def __decode_telegrams(self, telegram):
     """
