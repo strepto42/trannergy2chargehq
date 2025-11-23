@@ -105,17 +105,22 @@ trigger = threading.Event()
 t_threads_stopper = threading.Event()
 t_mqtt_stopper = threading.Event()
 
-# mqtt thread
-t_mqtt = mqtt.MQTTClient(mqtt_broker=cfg.MQTT_BROKER,
-                         mqtt_port=cfg.MQTT_PORT,
-                         mqtt_client_id=cfg.MQTT_CLIENT_UNIQ,
-                         mqtt_qos=cfg.MQTT_QOS,
-                         mqtt_cleansession=True,
-                         mqtt_protocol=mqtt.MQTTv5,
-                         username=cfg.MQTT_USERNAME,
-                         password=cfg.MQTT_PASSWORD,
-                         mqtt_stopper=t_mqtt_stopper,
-                         worker_threads_stopper=t_threads_stopper)
+# mqtt thread - only create if MQTT is enabled
+t_mqtt = None
+if cfg.MQTT_ENABLED:
+  t_mqtt = mqtt.MQTTClient(mqtt_broker=cfg.MQTT_BROKER,
+                           mqtt_port=cfg.MQTT_PORT,
+                           mqtt_client_id=cfg.MQTT_CLIENT_UNIQ,
+                           mqtt_qos=cfg.MQTT_QOS,
+                           mqtt_cleansession=True,
+                           mqtt_protocol=mqtt.MQTTv5,
+                           username=cfg.MQTT_USERNAME,
+                           password=cfg.MQTT_PASSWORD,
+                           mqtt_stopper=t_mqtt_stopper,
+                           worker_threads_stopper=t_threads_stopper)
+  logger.info("MQTT client initialized")
+else:
+  logger.info("MQTT functionality disabled")
 
 telegram = list()
 
@@ -139,8 +144,10 @@ except Exception as e:
 # Telegram parser thread
 t_parse = convert.ParseTelegrams(trigger, t_threads_stopper, t_mqtt, telegram)
 
-# Send Home Assistant auto discovery MQTT's
-t_discovery = ha.Discovery(t_threads_stopper, t_mqtt, __version__)
+# Send Home Assistant auto discovery MQTT's - only if MQTT is enabled
+t_discovery = None
+if cfg.MQTT_ENABLED and t_mqtt:
+  t_discovery = ha.Discovery(t_threads_stopper, t_mqtt, __version__)
 
 def exit_gracefully(signal, stackframe):
   """
@@ -164,31 +171,36 @@ def exit_gracefully(signal, stackframe):
 def main():
   logger.debug(">>")
 
-  # Set last will/testament
-  t_mqtt.will_set(cfg.MQTT_TOPIC_PREFIX + "/status", payload="interrupted", qos=cfg.MQTT_QOS, retain=True)
+  # Set last will/testament - only if MQTT is enabled
+  if cfg.MQTT_ENABLED and t_mqtt:
+    t_mqtt.will_set(cfg.MQTT_TOPIC_PREFIX + "/status", payload="interrupted", qos=cfg.MQTT_QOS, retain=True)
 
   # Start all threads
-  t_mqtt.start()
+  if cfg.MQTT_ENABLED and t_mqtt:
+    t_mqtt.start()
   t_parse.start()
-  t_discovery.start()
+  if cfg.MQTT_ENABLED and t_discovery:
+    t_discovery.start()
   t_serial.start()
 
-  # Set status to online
-  t_mqtt.set_status(cfg.MQTT_TOPIC_PREFIX + "/status", "online", retain=True)
-  t_mqtt.do_publish(cfg.MQTT_TOPIC_PREFIX + "/sw-version", f"main={__version__}; mqtt={mqtt.__version__}", retain=True)
+  # Set status to online - only if MQTT is enabled
+  if cfg.MQTT_ENABLED and t_mqtt:
+    t_mqtt.set_status(cfg.MQTT_TOPIC_PREFIX + "/status", "online", retain=True)
+    t_mqtt.do_publish(cfg.MQTT_TOPIC_PREFIX + "/sw-version", f"main={__version__}; mqtt={mqtt.__version__}", retain=True)
 
   # block till t_serial stops receiving telegrams/exits
   t_serial.join()
   logger.debug("t_serial.join exited; set stopper for other threats")
   t_threads_stopper.set()
 
-  # Set status to offline
-  t_mqtt.set_status(cfg.MQTT_TOPIC_PREFIX + "/status", "offline", retain=True)
+  # Set status to offline - only if MQTT is enabled
+  if cfg.MQTT_ENABLED and t_mqtt:
+    t_mqtt.set_status(cfg.MQTT_TOPIC_PREFIX + "/status", "offline", retain=True)
 
-  # Todo check if MQTT queue is empty before setting stopper
-  # Use a simple delay of 1sec before closing mqtt
-  time.sleep(1)
-  t_mqtt_stopper.set()
+    # Todo check if MQTT queue is empty before setting stopper
+    # Use a simple delay of 1sec before closing mqtt
+    time.sleep(1)
+    t_mqtt_stopper.set()
 
   logger.debug("<<" )
   return

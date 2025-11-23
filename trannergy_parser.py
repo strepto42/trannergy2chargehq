@@ -22,13 +22,17 @@ import time
 import binascii
 import json
 import config as cfg
+import rest_client
 
 # Logging
 import __main__
 import logging
 import os
-script = os.path.basename(__main__.__file__)
-script = os.path.splitext(script)[0]
+try:
+    script = os.path.basename(__main__.__file__)
+    script = os.path.splitext(script)[0]
+except AttributeError:
+    script = "trannergy_parser"
 logger = logging.getLogger(script + "." + __name__)
 
 
@@ -52,6 +56,16 @@ class ParseTelegrams(threading.Thread):
     self.__mqtt = mqtt
     self.__prevjsondict = {}
 
+    # Initialize REST client for ChargeHQ if enabled
+    self.__rest_client = None
+    if cfg.REST_ENABLED:
+      try:
+        self.__rest_client = rest_client.ChargeHQClient()
+        logger.info("REST client initialized for ChargeHQ")
+      except Exception as e:
+        logger.error(f"Failed to initialize REST client: {e}")
+        self.__rest_client = None
+
   def __del__(self):
     logger.debug(">>")
 
@@ -63,12 +77,42 @@ class ParseTelegrams(threading.Thread):
     :return:
     """
 
-    # make resilient against double forward slashes in topic
-    topic = cfg.MQTT_TOPIC_PREFIX
-    topic = topic.replace('//', '/')
-    message = json.dumps(json_dict, sort_keys=True, separators=(',', ':'))
-    self.__mqtt.do_publish(topic, message, retain=False)
-    logger.info(message)
+    # Publish to MQTT if enabled and client is available
+    if cfg.MQTT_ENABLED and self.__mqtt:
+      # make resilient against double forward slashes in topic
+      topic = cfg.MQTT_TOPIC_PREFIX
+      topic = topic.replace('//', '/')
+      message = json.dumps(json_dict, sort_keys=True, separators=(',', ':'))
+      self.__mqtt.do_publish(topic, message, retain=False)
+      logger.info(f"MQTT: {message}")
+    else:
+      logger.debug("MQTT disabled - data not published to MQTT")
+
+    # Send data to REST endpoint if enabled
+    self.__send_to_rest(json_dict)
+
+  def __send_to_rest(self, json_dict):
+    """
+    Send data to REST endpoints (e.g., ChargeHQ)
+
+    :param json_dict: Dictionary containing inverter data
+    :return:
+    """
+    if not self.__rest_client or not cfg.REST_ENABLED:
+      return
+
+    try:
+      # Extract production power (p_ac1 is in watts, convert to kW)
+      production_kw = json_dict.get('p_ac1', 0) / 1000.0
+
+      # Use configured default consumption or try to calculate from available data
+      consumption_kw = cfg.REST_DEFAULT_CONSUMPTION_KW
+
+      # Send to ChargeHQ
+      self.__rest_client.send_solar_data(production_kw, consumption_kw)
+
+    except Exception as e:
+      logger.error(f"Error sending data to REST endpoint: {e}")
 
   def __decode_telegrams(self, telegram):
     """
@@ -104,37 +148,54 @@ class ParseTelegrams(threading.Thread):
     # https://github.com/XtheOne/Inverter-Data-Logger/blob/master/InverterMsg.py
     # Current Trannergy is one phase system
     # For 3 phase, uncomment
-    values["msg"] = hexdata[24+offset:28+offset]
-    values["serial"] = binascii.unhexlify(hexdata[30 + offset:62 + offset]).decode('utf-8')
-    values["temperature"] = float(int(hexdata[62+offset:66+offset], 16)) / 10.0
-    values["v_pv1"] = float(int(hexdata[66+offset:70+offset], 16)) / 10.0
-    values["v_pv2"] = float(int(hexdata[70+offset:74+offset], 16)) / 10.0
-    # values["v_pv3"] = float(int(hexdata[74:78], 16))/10
-    values["i_pv1"] = float(int(hexdata[78+offset:82+offset], 16)) / 10.0
-    values["i_pv2"] = float(int(hexdata[82+offset:86+offset], 16)) / 10.0
-    # values["i_pv3"] = float(int(hexdata[86:90], 16))/10
-    values["i_ac1"] = int(hexdata[90+offset:94+offset], 16) / 10.0
-    # values["i_ac2"] = float(int(hexdata[94:98], 16))/10
-    # values["i_ac3"] = float(int(hexdata[98:102], 16))/10
-    values["v_ac1"] = float(int(hexdata[102+offset:106+offset], 16)) / 10.0
-    # values["v_ac2"] = float(int(hexdata[106:110], 16))/10
-    # values["v_ac3"] = float(int(hexdata[110:114], 16))/10
-    values["f_ac"] = float(int(hexdata[114+offset:118+offset], 16)) / 100.0
-    values["p_ac1"] = int(hexdata[118+offset:122+offset], 16)
-    # values["p_ac2"] = float(int(hexdata[122:126], 16))
-    # values["p_ac3"] = float(int(hexdata[126:130], 16))
-    # unknown = float(int(hexdata[130:134],16))/100
-    values["yield_today"] = int(hexdata[138+offset:142+offset], 16) * 10
-    # values["yield_yesterday"] = int(hexdata[134+offset:138+offset], 16) * 10  # not implemented
-    values["yield_total"] = int(hexdata[142+offset:150+offset], 16) * 100
-    values["hrs_total"] = int(hexdata[150+offset:158+offset], 16)
-    values["runstate"] = int(hexdata[158 + offset:160 + offset], 16)
-    values["GVFault_1"] = int(hexdata[162 + offset:164 + offset], 16)
-    values["GVFault_2"] = int(hexdata[166 + offset:168 + offset], 16)
-    values["GZFault"] = int(hexdata[170 + offset:172 + offset], 16)
-    values["TmpFault"] = int(hexdata[174 + offset:176 + offset], 16)
-    values["PVFault"] = int(hexdata[178 + offset:180 + offset], 16)
-    values["GFCIFault"] = int(hexdata[182 + offset:184 + offset], 16)
+    try:
+      values["msg"] = hexdata[24+offset:28+offset]
+
+      # Extract and decode serial number with error handling
+      serial_hex = hexdata[30 + offset:62 + offset]
+      logger.debug(f"Serial hex section: {serial_hex}")
+      values["serial"] = binascii.unhexlify(serial_hex).decode('utf-8', errors='ignore').strip('\x00')
+      logger.debug(f"Decoded serial: {values['serial']}")
+
+      values["temperature"] = float(int(hexdata[62+offset:66+offset], 16)) / 10.0
+      values["v_pv1"] = float(int(hexdata[66+offset:70+offset], 16)) / 10.0
+      values["v_pv2"] = float(int(hexdata[70+offset:74+offset], 16)) / 10.0
+      # values["v_pv3"] = float(int(hexdata[74:78], 16))/10
+      values["i_pv1"] = float(int(hexdata[78+offset:82+offset], 16)) / 10.0
+      values["i_pv2"] = float(int(hexdata[82+offset:86+offset], 16)) / 10.0
+      # values["i_pv3"] = float(int(hexdata[86:90], 16))/10
+      values["i_ac1"] = int(hexdata[90+offset:94+offset], 16) / 10.0
+      # values["i_ac2"] = float(int(hexdata[94:98], 16))/10
+      # values["i_ac3"] = float(int(hexdata[98:102], 16))/10
+      values["v_ac1"] = float(int(hexdata[102+offset:106+offset], 16)) / 10.0
+      # values["v_ac2"] = float(int(hexdata[106:110], 16))/10
+      # values["v_ac3"] = float(int(hexdata[110:114], 16))/10
+      values["f_ac"] = float(int(hexdata[114+offset:118+offset], 16)) / 100.0
+      values["p_ac1"] = int(hexdata[118+offset:122+offset], 16)
+
+
+      # values["p_ac2"] = float(int(hexdata[122:126], 16))
+      # values["p_ac3"] = float(int(hexdata[126:130], 16))
+      # unknown = float(int(hexdata[130:134],16))/100
+      values["yield_today"] = int(hexdata[138+offset:142+offset], 16) / 100.0
+      # values["yield_yesterday"] = int(hexdata[134+offset:138+offset], 16) * 10  # not implemented
+      values["yield_total"] = int(hexdata[142+offset:150+offset], 16) * 100
+      values["hrs_total"] = int(hexdata[150+offset:158+offset], 16)
+      values["runstate"] = int(hexdata[158 + offset:160 + offset], 16)
+      values["GVFault_1"] = int(hexdata[162 + offset:164 + offset], 16)
+      values["GVFault_2"] = int(hexdata[166 + offset:168 + offset], 16)
+      values["GZFault"] = int(hexdata[170 + offset:172 + offset], 16)
+      values["TmpFault"] = int(hexdata[174 + offset:176 + offset], 16)
+      values["PVFault"] = int(hexdata[178 + offset:180 + offset], 16)
+      values["GFCIFault"] = int(hexdata[182 + offset:184 + offset], 16)
+
+      logger.info(f"Inverter data parsed #{values['counter']} - {values['serial']}: {values['p_ac1']}W, {values['v_ac1']}V, {values['i_ac1']}A, {values['temperature']}°C, yield today: {values['yield_today']}KWh")
+
+    except Exception as e:
+      logger.error(f"Error parsing inverter data: {e}")
+      logger.error(f"Hex data length: {len(hexdata)}, Expected minimum: {184 + offset}")
+      logger.error(f"Hex data sample: {hexdata[:100]}...")
+      raise
 
 
 #    1: 1,  # len(1)

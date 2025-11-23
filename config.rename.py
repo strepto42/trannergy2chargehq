@@ -13,6 +13,10 @@
 # DEBUG, INFO, WARNING, ERROR, CRITICAL
 loglevel = "INFO"
 
+# [ MQTT ]
+# Enable/disable MQTT functionality
+MQTT_ENABLED = True
+
 # Using local dns names was not always reliable with PAHO
 MQTT_BROKER = "192.168.1.1"
 MQTT_PORT = 1883
@@ -23,6 +27,17 @@ MQTT_USERNAME = "username"
 MQTT_PASSWORD = "secret"
 
 MQTT_TOPIC_PREFIX = "solar/trannergy/roof_w"
+
+# ChargeHQ API key
+CHARGEHQ_APIKEY = "your-api-key-here"
+
+# [ REST CLIENT ]
+# Enable sending data to REST endpoints (ChargeHQ)
+REST_ENABLED = False
+# Default consumption value to use when actual consumption data is not available
+REST_DEFAULT_CONSUMPTION_KW = 1.0
+# Maximum frequency for REST API calls (in seconds)
+REST_MAX_FREQUENCY_SECONDS = 60
 
 # [ InfluxDB ]
 # Add a influxdb database tag, for Telegraf processing.
